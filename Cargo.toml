@@ -1,6 +1,10 @@
 [package]
 name = "tmm"
 version = "0.1.0"
-edition = "2021"
+edition = "2018"
+authors = ["DomesticMoth"]
+repository = "https://github.com/DomesticMoth/tmm"
+readme = "README.md"
+description = "Telegram bot"
 
 [dependencies]
