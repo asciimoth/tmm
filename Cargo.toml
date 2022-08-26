@@ -5,7 +5,7 @@ edition = "2018"
 authors = ["DomesticMoth"]
 repository = "https://github.com/DomesticMoth/tmm"
 readme = "README.md"
-description = "Telegram bot"
+description = "Telegram Multichat Manager"
 
 [dependencies]
 
