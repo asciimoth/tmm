@@ -8,3 +8,11 @@ readme = "README.md"
 description = "Telegram bot"
 
 [dependencies]
+
+[profile.release]
+lto = true
+opt-level = 3
+codegen-units = 1
+panic = 'abort'
+strip = true
+
