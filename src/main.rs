@@ -1,5 +1,6 @@
 use teloxide::prelude::*;
-use teloxide::types::{MessageKind, MediaKind, Update};
+use teloxide::RequestError;
+use teloxide::types::{ChatMemberUpdated, Update, ChatMember, ChatMemberKind, UserId, ChatId, Recipient};
 use dotenv::dotenv;
 use std::env;
 use std::process::exit;
@@ -50,7 +51,7 @@ fn unbind(db: & mut PickleDb, s: i64) -> PResult<()> {
     if let Some(m) = db.get::<i64>(&format!("s{}", s)) {
         let mkey = format!("m{}", m);
         db.rem(&format!("s{}", s))?;
-        let slaves = match db.get::<Vec<i64>>(&mkey) {
+        match db.get::<Vec<i64>>(&mkey) {
             Some(v) => {
                 let mut ns = Vec::<i64>::new();
                 for e in v {
@@ -92,8 +93,21 @@ fn bind(db: & mut PickleDb, m: i64, s: i64) -> PResult<()>{
     db.dump()
 }
 
+fn get_master(db: & mut PickleDb, s: i64) -> Option<i64> {
+    db.get::<i64>(&format!("s{}", s))
+}
+
+fn get_slaves(db: & mut PickleDb, m: i64) -> Vec<i64> {
+    let mkey = format!("m{}", m);
+    match db.get::<Vec<i64>>(&mkey) {
+        Some(v) => v,
+        None => Vec::new(),
+    }
+}
+
 #[tokio::main]
 async fn main() {
+    let kick = true;
     dotenv().ok();
     pretty_env_logger::init();
     let db_file = match env::var("DB") {
@@ -104,7 +118,7 @@ async fn main() {
         }
     };
     log::info!("Env readed");
-    let mut db = match get_db(&db_file) {
+    let db = match get_db(&db_file) {
         Ok(db) => db,
         Err(err) => {
             log::error!("Cannot load db: {}", err);
@@ -114,59 +128,116 @@ async fn main() {
     let db:Arc<Mutex<PickleDb>> = Arc::new(Mutex::new(db));
     log::info!("Db loaded");
     let bot = Bot::from_env().auto_send();
-    log::info!("Starting tg bot");
-    let handler = Update::filter_message().endpoint(
-        |message: Message, bot: AutoSend<Bot>, db: Arc<Mutex<PickleDb>>| async move {
-        let chat_id = message.chat.id;
-        let msg_id = message.id;
-        if let Some(text) = message.text() {
-            if text == "/getchatid" {
-                bot.send_message(chat_id, format!("Chat id is {}", chat_id)).await?;
-            } else if text == "/unbindfromall" {
-                let mut db = db.lock().await;
-                my_db_unwrap("Db error", unbind(& mut db, chat_id.0));
-                bot.send_message(
-                    chat_id,
-                    "Unbinded dom all chats",
-                ).await?;
-            } else if text.starts_with("/bindtochat ") {
-                let str_master_id = text.strip_prefix("/bindtochat ").unwrap();
-                match str_master_id.parse::<i64>() {
-                    Ok(master_id) => {
-                        if master_id == chat_id.0 {
-                            bot.send_message(
-                                chat_id,
-                                "Cannot bind chat to istself",
-                            ).await?;
-                        }else{
-                            let mut db = db.lock().await;
-                            my_db_unwrap("Db error", bind(& mut db, master_id, chat_id.0));
-                            bot.send_message(
-                                chat_id,
-                                format!("Binded to {}", master_id),
-                            ).await?;
+    let handler = dptree::entry()
+        .branch(Update::filter_chat_member().endpoint(
+            |member: ChatMemberUpdated, bot: AutoSend<Bot>, db: Arc<Mutex<PickleDb>>, kick: bool| async move {
+                let chat = member.chat.id;
+                let user = member.new_chat_member.user.id;
+                // I write function in closure in function because I can
+                async fn leave_user(db: & mut PickleDb, bot: &AutoSend<Bot>, user: UserId, chat: ChatId) -> Result<(), RequestError>{
+                    for slave in get_slaves(db, chat.0){
+                        bot.kick_chat_member(Recipient::Id(ChatId(slave)), user).await?;
+                    }
+                    Ok(())
+                }
+                async fn new_user(db: & mut PickleDb, bot: &AutoSend<Bot>, user: UserId, chat: ChatId, kick: bool) -> Result<(), RequestError>{
+                    let mut unban_slaves = true;
+                    if let Some(master) = get_master(db, chat.0){
+                        unban_slaves = false;
+                        if match bot.get_chat_member(Recipient::Id(ChatId(master)), user).await?.kind {
+                            ChatMemberKind::Left => true,
+                            ChatMemberKind::Banned(_) => true,
+                            _ => false,
+                        }{
+                            bot.kick_chat_member(chat, user).await?;
+                            leave_user(db, bot, user, chat).await?;
+                        }else{ unban_slaves = true; }
+                    }
+                    if unban_slaves {
+                        for slave in get_slaves(db, chat.0){
+                            bot.unban_chat_member(Recipient::Id(ChatId(slave)), user).await?;
+                            bot.promote_chat_member(Recipient::Id(ChatId(slave)), user).await?;
                         }
                     }
-                    Err(_) => {
-                        bot.send_message(
-                            chat_id,
-                            format!(
-                                "Cannot bid to '{}'; Chat id is invalid",
-                                str_master_id,
-                            ),
-                        ).await?;
+                    Ok(())
+                }
+                let mut db = db.lock().await;
+                if !member.new_chat_member.user.is_bot {
+                    match member.new_chat_member.kind {
+                        ChatMemberKind::Administrator(_) => {
+                            new_user(& mut db, &bot, user, chat, kick).await;
+                        }
+                        ChatMemberKind::Owner(_) => {
+                            new_user(& mut db, &bot, user, chat, kick).await;
+                        }
+                        ChatMemberKind::Member => {
+                            new_user(& mut db, &bot, user, chat, kick).await;
+                        }
+                        ChatMemberKind::Restricted(_) => {
+                            new_user(& mut db, &bot, user, chat, kick).await;
+                        }
+                        ChatMemberKind::Left => {
+                            leave_user(& mut db, &bot, user, chat).await;
+                        }
+                        ChatMemberKind::Banned(_) => {
+                            leave_user(& mut db, &bot, user, chat).await;
+                        }
                     }
                 }
-            } else {
-                log::debug!("Text: {}", text);
+                respond(())
             }
-        }
-            respond(())
-        },
-    );
+        ))
+        .branch(Update::filter_message().endpoint(
+            |message: Message, bot: AutoSend<Bot>, db: Arc<Mutex<PickleDb>>| async move {
+                let chat_id = message.chat.id;
+                if let Some(text) = message.text() {
+                    if text == "/getchatid" {
+                        bot.send_message(chat_id, format!("Chat id is {}", chat_id)).await?;
+                    } else if text == "/unbindfromall" {
+                        let mut db = db.lock().await;
+                        my_db_unwrap("Db error", unbind(& mut db, chat_id.0));
+                        bot.send_message(
+                            chat_id,
+                            "Unbinded dom all chats",
+                        ).await?;
+                    } else if text.starts_with("/bindtochat ") {
+                        let str_master_id = text.strip_prefix("/bindtochat ").unwrap();
+                        match str_master_id.parse::<i64>() {
+                            Ok(master_id) => {
+                                if master_id == chat_id.0 {
+                                    bot.send_message(
+                                        chat_id,
+                                        "Cannot bind chat to istself",
+                                    ).await?;
+                                }else{
+                                    let mut db = db.lock().await;
+                                    my_db_unwrap("Db error", bind(& mut db, master_id, chat_id.0));
+                                    bot.send_message(
+                                        chat_id,
+                                        format!("Binded to {}", master_id),
+                                    ).await?;
+                                }
+                            }
+                            Err(_) => {
+                                bot.send_message(
+                                    chat_id,
+                                    format!(
+                                        "Cannot bid to '{}'; Chat id is invalid",
+                                        str_master_id,
+                                    ),
+                                ).await?;
+                            }
+                        }
+                    }
+                }
+                respond(())
+            }
+        ));
+    log::info!("Starting tg bot");
     Dispatcher::builder(bot, handler)
-        .dependencies(dptree::deps![db.clone()])
+        .dependencies(dptree::deps![db.clone(), kick])
         .build()
+        .setup_ctrlc_handler()
         .dispatch()
         .await;
     let mut db = db.lock().await;
