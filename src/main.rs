@@ -1,6 +1,6 @@
 use teloxide::prelude::*;
 use teloxide::RequestError;
-use teloxide::types::{ChatMemberUpdated, Update, ChatMember, ChatMemberKind, UserId, ChatId, Recipient};
+use teloxide::types::{ChatMemberUpdated, Update, ChatMemberKind, UserId, ChatId, Recipient};
 use dotenv::dotenv;
 use std::env;
 use std::process::exit;
@@ -107,7 +107,6 @@ fn get_slaves(db: & mut PickleDb, m: i64) -> Vec<i64> {
 
 #[tokio::main]
 async fn main() {
-    let kick = true;
     dotenv().ok();
     pretty_env_logger::init();
     let db_file = match env::var("DB") {
@@ -130,7 +129,7 @@ async fn main() {
     let bot = Bot::from_env().auto_send();
     let handler = dptree::entry()
         .branch(Update::filter_chat_member().endpoint(
-            |member: ChatMemberUpdated, bot: AutoSend<Bot>, db: Arc<Mutex<PickleDb>>, kick: bool| async move {
+            |member: ChatMemberUpdated, bot: AutoSend<Bot>, db: Arc<Mutex<PickleDb>>| async move {
                 let chat = member.chat.id;
                 let user = member.new_chat_member.user.id;
                 // I write function in closure in function because I can
@@ -140,7 +139,7 @@ async fn main() {
                     }
                     Ok(())
                 }
-                async fn new_user(db: & mut PickleDb, bot: &AutoSend<Bot>, user: UserId, chat: ChatId, kick: bool) -> Result<(), RequestError>{
+                async fn new_user(db: & mut PickleDb, bot: &AutoSend<Bot>, user: UserId, chat: ChatId) -> Result<(), RequestError>{
                     let mut unban_slaves = true;
                     if let Some(master) = get_master(db, chat.0){
                         unban_slaves = false;
@@ -165,22 +164,22 @@ async fn main() {
                 if !member.new_chat_member.user.is_bot {
                     match member.new_chat_member.kind {
                         ChatMemberKind::Administrator(_) => {
-                            new_user(& mut db, &bot, user, chat, kick).await;
+                            new_user(& mut db, &bot, user, chat).await?;
                         }
                         ChatMemberKind::Owner(_) => {
-                            new_user(& mut db, &bot, user, chat, kick).await;
+                            new_user(& mut db, &bot, user, chat).await?;
                         }
                         ChatMemberKind::Member => {
-                            new_user(& mut db, &bot, user, chat, kick).await;
+                            new_user(& mut db, &bot, user, chat).await?;
                         }
                         ChatMemberKind::Restricted(_) => {
-                            new_user(& mut db, &bot, user, chat, kick).await;
+                            new_user(& mut db, &bot, user, chat).await?;
                         }
                         ChatMemberKind::Left => {
-                            leave_user(& mut db, &bot, user, chat).await;
+                            leave_user(& mut db, &bot, user, chat).await?;
                         }
                         ChatMemberKind::Banned(_) => {
-                            leave_user(& mut db, &bot, user, chat).await;
+                            leave_user(& mut db, &bot, user, chat).await?;
                         }
                     }
                 }
@@ -235,7 +234,7 @@ async fn main() {
         ));
     log::info!("Starting tg bot");
     Dispatcher::builder(bot, handler)
-        .dependencies(dptree::deps![db.clone(), kick])
+        .dependencies(dptree::deps![db.clone()])
         .build()
         .setup_ctrlc_handler()
         .dispatch()
