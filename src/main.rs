@@ -15,7 +15,7 @@ fn get_db(path: &str) -> PResult<PickleDb> {
     match PickleDb::load(
         path, 
         PickleDbDumpPolicy::DumpUponRequest,
-        SerializationMethod::Json
+        SerializationMethod::Cbor
     ) {
         Ok(db) => Ok(db),
         Err(err) => {
@@ -24,7 +24,7 @@ fn get_db(path: &str) -> PResult<PickleDb> {
                     let mut db = PickleDb::new(
                         path,
                         PickleDbDumpPolicy::DumpUponRequest,
-                        SerializationMethod::Json,
+                        SerializationMethod::Cbor,
                     );
                     match db.dump() {
                         Ok(_) => Ok(db),
