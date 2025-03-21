@@ -1,3 +1,6 @@
+This bot was created before telegram add forums feature and nowasdays effectively useless.
+  
+---
 # tmm
 This bot allows you to logically bind two telegram chats so that users who are not in the master cannot be in the slave chat.
 
